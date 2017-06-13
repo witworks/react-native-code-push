@@ -30,7 +30,7 @@ gradle.projectsEvaluated {
     else if (project.hasProperty('nodeModulesPath')) {
         nodeModulesPath = project.nodeModulesPath
     } else {
-        nodeModulesPath = "../../node_modules";
+        nodeModulesPath = "../../react/node_modules";
     }
 
     productFlavors.each { productFlavorName ->
