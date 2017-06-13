@@ -1,6 +1,14 @@
+#if __has_include(<React/RCTEventEmitter.h>)
+#import <React/RCTEventEmitter.h>
+#elif __has_include("RCTEventEmitter.h")
+#import "RCTEventEmitter.h"
+#else
+#import "React/RCTEventEmitter.h"   // Required when used as a Pod in a Swift project
+#endif
+
 #import <Foundation/Foundation.h>
 
-@interface CodePush : NSObject
+@interface CodePush : RCTEventEmitter
 
 + (NSURL *)binaryBundleURL;
 /*
@@ -21,14 +29,45 @@
 + (NSURL *)bundleURLForResource:(NSString *)resourceName
                   withExtension:(NSString *)resourceExtension;
 
++ (NSURL *)bundleURLForResource:(NSString *)resourceName
+                  withExtension:(NSString *)resourceExtension
+                   subdirectory:(NSString *)resourceSubdirectory;
+
++ (NSURL *)bundleURLForResource:(NSString *)resourceName
+                  withExtension:(NSString *)resourceExtension
+                   subdirectory:(NSString *)resourceSubdirectory
+                         bundle:(NSBundle *)resourceBundle;
+
 + (NSString *)getApplicationSupportDirectory;
 
++ (NSString *)bundleAssetsPath;
+
 /*
- * This methods allows dynamically setting the app's
+ * This method allows the version of the app's binary interface
+ * to be specified, which would otherwise default to the
+ * App Store version of the app.
+ */
++ (void)overrideAppVersion:(NSString *)appVersion;
+
+/*
+ * This method allows dynamically setting the app's
  * deployment key, in addition to setting it via
  * the Info.plist file's CodePushDeploymentKey setting.
  */
 + (void)setDeploymentKey:(NSString *)deploymentKey;
+
+/*
+ * This method checks to see whether a specific package hash
+ * has previously failed installation.
+ */
++ (BOOL)isFailedHash:(NSString*)packageHash;
+
+/*
+ * This method checks to see whether a specific package hash
+ * represents a downloaded and installed update, that hasn't
+ * been applied yet via an app restart.
+ */
++ (BOOL)isPendingUpdate:(NSString*)packageHash;
 
 // The below methods are only used during tests.
 + (BOOL)isUsingTestConfiguration;
@@ -39,7 +78,7 @@
 
 @interface CodePushConfig : NSObject
 
-@property (readonly) NSString *appVersion;
+@property (copy) NSString *appVersion;
 @property (readonly) NSString *buildVersion;
 @property (readonly) NSDictionary *configuration;
 @property (copy) NSString *deploymentKey;
@@ -58,6 +97,7 @@
 @property (copy) void (^progressCallback)(long long, long long);
 @property (copy) void (^doneCallback)(BOOL);
 @property (copy) void (^failCallback)(NSError *err);
+@property NSString *downloadUrl;
 
 - (id)init:(NSString *)downloadFilePath
 operationQueue:(dispatch_queue_t)operationQueue
@@ -85,7 +125,6 @@ failCallback:(void (^)(NSError *err))failCallback;
            doneCallback:(void (^)())doneCallback
            failCallback:(void (^)(NSError *err))failCallback;
 
-+ (NSString *)getBinaryAssetsPath;
 + (NSDictionary *)getCurrentPackage:(NSError **)error;
 + (NSDictionary *)getPreviousPackage:(NSError **)error;
 + (NSString *)getCurrentPackageFolderPath:(NSError **)error;
@@ -97,7 +136,7 @@ failCallback:(void (^)(NSError *err))failCallback;
 
 + (NSString *)getPackageFolderPath:(NSString *)packageHash;
 
-+ (void)installPackage:(NSDictionary *)updatePackage
++ (BOOL)installPackage:(NSDictionary *)updatePackage
    removePendingUpdate:(BOOL)removePendingUpdate
                  error:(NSError **)error;
 
@@ -122,7 +161,7 @@ failCallback:(void (^)(NSError *err))failCallback;
 
 @interface CodePushUpdateUtils : NSObject
 
-+ (void)copyEntriesInFolder:(NSString *)sourceFolder
++ (BOOL)copyEntriesInFolder:(NSString *)sourceFolder
                  destFolder:(NSString *)destFolder
                       error:(NSError **)error;
 
@@ -143,10 +182,13 @@ failCallback:(void (^)(NSError *err))failCallback;
 
 @end
 
+void CPLog(NSString *formatString, ...);
+
 typedef NS_ENUM(NSInteger, CodePushInstallMode) {
     CodePushInstallModeImmediate,
     CodePushInstallModeOnNextRestart,
-    CodePushInstallModeOnNextResume
+    CodePushInstallModeOnNextResume,
+    CodePushInstallModeOnNextSuspend
 };
 
 typedef NS_ENUM(NSInteger, CodePushUpdateState) {

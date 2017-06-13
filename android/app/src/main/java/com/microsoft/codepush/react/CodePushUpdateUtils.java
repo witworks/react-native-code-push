@@ -2,10 +2,9 @@ package com.microsoft.codepush.react;
 
 import android.content.Context;
 
-import com.facebook.react.bridge.ReadableArray;
-import com.facebook.react.bridge.WritableMap;
-
 import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -25,9 +24,13 @@ public class CodePushUpdateUtils {
         File folder = new File(folderPath);
         File[] folderFiles = folder.listFiles();
         for (File file : folderFiles) {
+            String fileName = file.getName();
             String fullFilePath = file.getAbsolutePath();
-            String relativePath = (pathPrefix.isEmpty() ? "" : (pathPrefix + "/")) + file.getName();
-            if (file.isDirectory()) {
+            String relativePath = (pathPrefix.isEmpty() ? "" : (pathPrefix + "/")) + fileName;
+
+            if (fileName.equals(".DS_Store") || fileName.equals("__MACOSX")) {
+                continue;
+            } else if (file.isDirectory()) {
                 addContentsOfFolderToManifest(fullFilePath, relativePath, manifest);
             } else {
                 try {
@@ -66,14 +69,18 @@ public class CodePushUpdateUtils {
 
     public static void copyNecessaryFilesFromCurrentPackage(String diffManifestFilePath, String currentPackageFolderPath, String newPackageFolderPath) throws IOException{
         FileUtils.copyDirectoryContents(currentPackageFolderPath, newPackageFolderPath);
-        WritableMap diffManifest = CodePushUtils.getWritableMapFromFile(diffManifestFilePath);
-        ReadableArray deletedFiles = diffManifest.getArray("deletedFiles");
-        for (int i = 0; i < deletedFiles.size(); i++) {
-            String fileNameToDelete = deletedFiles.getString(i);
-            File fileToDelete = new File(newPackageFolderPath, fileNameToDelete);
-            if (fileToDelete.exists()) {
-                fileToDelete.delete();
+        JSONObject diffManifest = CodePushUtils.getJsonObjectFromFile(diffManifestFilePath);
+        try {
+            JSONArray deletedFiles = diffManifest.getJSONArray("deletedFiles");
+            for (int i = 0; i < deletedFiles.length(); i++) {
+                String fileNameToDelete = deletedFiles.getString(i);
+                File fileToDelete = new File(newPackageFolderPath, fileNameToDelete);
+                if (fileToDelete.exists()) {
+                    fileToDelete.delete();
+                }
             }
+        } catch (JSONException e) {
+            throw new CodePushUnknownException("Unable to copy files from current package during diff update", e);
         }
     }
 
@@ -102,12 +109,15 @@ public class CodePushUpdateUtils {
         try {
             return CodePushUtils.getStringFromInputStream(context.getAssets().open(CodePushConstants.CODE_PUSH_HASH_FILE_NAME));
         } catch (IOException e) {
-            if (!isDebugMode) {
-                // Only print this message in "Release" mode. In "Debug", we may not have the
-                // hash if the build skips bundling the files.
-                CodePushUtils.log("Unable to get the hash of the binary's bundled resources - \"codepush.gradle\" may have not been added to the build definition.");
+            try {
+                return CodePushUtils.getStringFromInputStream(context.getAssets().open(CodePushConstants.CODE_PUSH_OLD_HASH_FILE_NAME));
+            } catch (IOException ex) {
+                if (!isDebugMode) {
+                    // Only print this message in "Release" mode. In "Debug", we may not have the
+                    // hash if the build skips bundling the files.
+                    CodePushUtils.log("Unable to get the hash of the binary's bundled resources - \"codepush.gradle\" may have not been added to the build definition.");
+                }
             }
-
             return null;
         }
     }

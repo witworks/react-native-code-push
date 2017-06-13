@@ -3,7 +3,7 @@ import { Alert } from "./AlertAdapter";
 import requestFetchAdapter from "./request-fetch-adapter";
 import { AppState, Platform } from "react-native";
 import RestartManager from "./RestartManager";
-import log from './logging';
+import log from "./logging";
 
 let NativeCodePush = require("react-native").NativeModules.CodePush;
 const PackageMixins = require("./package-mixins")(NativeCodePush);
@@ -46,7 +46,7 @@ async function checkForUpdate(deploymentKey = null) {
     queryPackage = localPackage;
   } else {
     queryPackage = { appVersion: config.appVersion };
-    if (Platform.OS === "ios" && config.packageHash) {
+    if (config.packageHash) {
       queryPackage.packageHash = config.packageHash;
     }
   }
@@ -75,7 +75,7 @@ async function checkForUpdate(deploymentKey = null) {
       localPackage && (update.packageHash === localPackage.packageHash) ||
       (!localPackage || localPackage._isDebugOnly) && config.packageHash === update.packageHash) {
     if (update && update.updateAppVersion) {
-      log("An update is available but it is targeting a newer binary version than you are currently running.");
+      log("An update is available but it is not targeting the binary version of your app.");
     }
 
     return null;
@@ -238,15 +238,36 @@ const sync = (() => {
   const setSyncCompleted = () => { syncInProgress = false; };
 
   return (options = {}, syncStatusChangeCallback, downloadProgressCallback) => {
+    let syncStatusCallbackWithTryCatch, downloadProgressCallbackkWithTryCatch;
+    if (typeof syncStatusChangeCallback === "function") {
+      syncStatusCallbackWithTryCatch = (...args) => {
+        try {
+          syncStatusChangeCallback(...args);
+        } catch (error) {
+          log(`An error has occurred : ${error.stack}`);
+        }
+      }
+    }
+
+    if (typeof downloadProgressCallback === "function") {
+      downloadProgressCallbackkWithTryCatch = (...args) => {
+        try {
+          downloadProgressCallback(...args);
+        } catch (error) {
+          log(`An error has occurred: ${error.stack}`);
+        }
+      }
+    }
+
     if (syncInProgress) {
-      typeof syncStatusChangeCallback === "function"
-        ? syncStatusChangeCallback(CodePush.SyncStatus.SYNC_IN_PROGRESS)
+      typeof syncStatusCallbackWithTryCatch === "function"
+        ? syncStatusCallbackWithTryCatch(CodePush.SyncStatus.SYNC_IN_PROGRESS)
         : log("Sync already in progress.");
       return Promise.resolve(CodePush.SyncStatus.SYNC_IN_PROGRESS);
     }
 
     syncInProgress = true;
-    const syncPromise = syncInternal(options, syncStatusChangeCallback, downloadProgressCallback);
+    const syncPromise = syncInternal(options, syncStatusCallbackWithTryCatch, downloadProgressCallbackkWithTryCatch);
     syncPromise
       .then(setSyncCompleted)
       .catch(setSyncCompleted);
@@ -342,8 +363,14 @@ async function syncInternal(options = {}, syncStatusChangeCallback, downloadProg
           log("An update is available, but it is being ignored due to having been previously rolled back.");
       }
 
-      syncStatusChangeCallback(CodePush.SyncStatus.UP_TO_DATE);
-      return CodePush.SyncStatus.UP_TO_DATE;
+      const currentPackage = await CodePush.getCurrentPackage();
+      if (currentPackage && currentPackage.isPending) {
+        syncStatusChangeCallback(CodePush.SyncStatus.UPDATE_INSTALLED);
+        return CodePush.SyncStatus.UPDATE_INSTALLED;
+      } else {
+        syncStatusChangeCallback(CodePush.SyncStatus.UP_TO_DATE);
+        return CodePush.SyncStatus.UP_TO_DATE;
+      }
     } else if (syncOptions.updateDialog) {
       // updateDialog supports any truthy value (e.g. true, "goo", 12),
       // but we should treat a non-object value as just the default dialog
@@ -401,12 +428,88 @@ async function syncInternal(options = {}, syncStatusChangeCallback, downloadProg
 
 let CodePush;
 
+function codePushify(options = {}) {
+  let React;
+  let ReactNative = require("react-native");
+
+  try { React = require("react"); } catch (e) { }
+  if (!React) {
+    try { React = ReactNative.React; } catch (e) { }
+    if (!React) {
+      throw new Error("Unable to find the 'React' module.");
+    }
+  }
+
+  if (!React.Component) {
+    throw new Error(
+`Unable to find the "Component" class, please either:
+1. Upgrade to a newer version of React Native that supports it, or
+2. Call the codePush.sync API in your component instead of using the @codePush decorator`
+    );
+  }
+
+  var decorator = (RootComponent) => {
+    return class CodePushComponent extends React.Component {
+      componentDidMount() {
+        if (options.checkFrequency === CodePush.CheckFrequency.MANUAL) {
+          CodePush.notifyAppReady();
+        } else {
+          let rootComponentInstance = this.refs.rootComponent;
+
+          let syncStatusCallback;
+          if (rootComponentInstance && rootComponentInstance.codePushStatusDidChange) {
+            syncStatusCallback = rootComponentInstance.codePushStatusDidChange;
+            if (rootComponentInstance instanceof React.Component) {
+              syncStatusCallback = syncStatusCallback.bind(rootComponentInstance);
+            }
+          }
+
+          let downloadProgressCallback;
+          if (rootComponentInstance && rootComponentInstance.codePushDownloadDidProgress) {
+            downloadProgressCallback = rootComponentInstance.codePushDownloadDidProgress;
+            if (rootComponentInstance instanceof React.Component) {
+              downloadProgressCallback = downloadProgressCallback.bind(rootComponentInstance);
+            }
+          }
+
+          CodePush.sync(options, syncStatusCallback, downloadProgressCallback);
+          if (options.checkFrequency === CodePush.CheckFrequency.ON_APP_RESUME) {
+            ReactNative.AppState.addEventListener("change", (newState) => {
+              newState === "active" && CodePush.sync(options, syncStatusCallback, downloadProgressCallback);
+            });
+          }
+        }
+      }
+
+      render() {
+        const props = {...this.props};
+
+        // we can set ref property on class components only (not stateless)
+        // check it by render method
+        if (RootComponent.prototype.render) {
+          props.ref = "rootComponent";
+        }
+
+        return <RootComponent {...props} />
+      }
+    }
+  }
+
+  if (typeof options === "function") {
+    // Infer that the root component was directly passed to us.
+    return decorator(options);
+  } else {
+    return decorator;
+  }
+}
+
 // If the "NativeCodePush" variable isn't defined, then
 // the app didn't properly install the native module,
 // and therefore, it doesn't make sense initializing
 // the JS interface when it wouldn't work anyways.
 if (NativeCodePush) {
-  CodePush = {
+  CodePush = codePushify;
+  Object.assign(CodePush, {
     AcquisitionSdk: Sdk,
     checkForUpdate,
     getConfiguration,
@@ -423,7 +526,10 @@ if (NativeCodePush) {
     InstallMode: {
       IMMEDIATE: NativeCodePush.codePushInstallModeImmediate, // Restart the app immediately
       ON_NEXT_RESTART: NativeCodePush.codePushInstallModeOnNextRestart, // Don't artificially restart the app. Allow the update to be "picked up" on the next app restart
-      ON_NEXT_RESUME: NativeCodePush.codePushInstallModeOnNextResume // Restart the app the next time it is resumed from the background
+      ON_NEXT_RESUME: NativeCodePush.codePushInstallModeOnNextResume, // Restart the app the next time it is resumed from the background
+      ON_NEXT_SUSPEND: NativeCodePush.codePushInstallModeOnNextSuspend // Restart the app _while_ it is in the background,
+      // but only after it has been in the background for "minimumBackgroundDuration" seconds (0 by default),
+      // so that user context isn't lost unless the app suspension is long enough to not matter
     },
     SyncStatus: {
       UP_TO_DATE: 0, // The running app is up-to-date
@@ -435,6 +541,11 @@ if (NativeCodePush) {
       AWAITING_USER_ACTION: 6,
       DOWNLOADING_PACKAGE: 7,
       INSTALLING_UPDATE: 8
+    },
+    CheckFrequency: {
+      ON_APP_START: 0,
+      ON_APP_RESUME: 1,
+      MANUAL: 2
     },
     UpdateState: {
       RUNNING: NativeCodePush.codePushUpdateStateRunning,
@@ -455,7 +566,7 @@ if (NativeCodePush) {
       optionalUpdateMessage: "An update is available. Would you like to install it?",
       title: "Update available"
     }
-  };
+  });
 } else {
   log("The CodePush module doesn't appear to be properly installed. Please double-check that everything is setup correctly.");
 }

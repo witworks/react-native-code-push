@@ -20,6 +20,14 @@ interface Promise<T> {
 export type DowloadProgressCallback = (progress: DownloadProgress) => void;
 export type SyncStatusChangedCallback = (status: CodePush.SyncStatus) => void;
 
+export interface CodePushOptions extends SyncOptions {
+    /**
+     * Specifies when you would like to synchronize updates with the CodePush server.
+     * Defaults to codePush.CheckFrequency.ON_APP_START.
+     */
+    checkFrequency: CodePush.CheckFrequency;
+}
+
 export interface DownloadProgress {
     /**
      * The total number of bytes expected to be received for this update.
@@ -219,6 +227,13 @@ export interface StatusReport {
     previousLabelOrAppVersion?: string;
 }
 
+/**
+ * Decorates a React Component configuring it to sync for updates with the CodePush server.
+ *
+ * @param options Options used to configure the end-user sync and update experience (e.g. when to check for updates?, show an prompt?, install the update immediately?).
+ */
+declare function CodePush(options?: CodePushOptions): Function;
+
 declare namespace CodePush {
     /**
      * Represents the default settings that will be used by the sync method if
@@ -289,7 +304,14 @@ declare namespace CodePush {
          * Indicates that you want to install the update, but don't want to restart the
          * app until the next time the end user resumes it from the background.
          */
-        ON_NEXT_RESUME
+        ON_NEXT_RESUME,
+
+        /**
+         * Indicates that you want to install the update when the app is in the background,
+         * but only after it has been in the background for "minimumBackgroundDuration" seconds (0 by default),
+         * so that user context isn't lost unless the app suspension is long enough to not matter.
+         */
+        ON_NEXT_SUSPEND
     }
 
     /**
@@ -382,6 +404,26 @@ declare namespace CodePush {
          * The deployment succeeded.
          */
         SUCCEEDED
+    }
+
+    /**
+     * Indicates when you would like to check for (and install) updates from the CodePush server.
+     */
+    enum CheckFrequency {
+        /**
+         * When the app is fully initialized (or more specifically, when the root component is mounted).
+         */
+        ON_APP_START,
+
+        /**
+         * When the app re-enters the foreground.
+         */
+        ON_APP_RESUME,
+
+        /**
+         * Don't automatically check for updates, but only do it when codePush.sync() is manully called inside app code.
+         */
+        MANUAL
     }
 }
 

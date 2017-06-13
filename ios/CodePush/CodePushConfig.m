@@ -8,7 +8,7 @@
 static CodePushConfig *_currentConfig;
 
 static NSString * const AppVersionConfigKey = @"appVersion";
-static NSString * const BuildVdersionConfigKey = @"buildVersion";
+static NSString * const BuildVersionConfigKey = @"buildVersion";
 static NSString * const ClientUniqueIDConfigKey = @"clientUniqueId";
 static NSString * const DeploymentKeyConfigKey = @"deploymentKey";
 static NSString * const ServerURLConfigKey = @"serverUrl";
@@ -20,7 +20,9 @@ static NSString * const ServerURLConfigKey = @"serverUrl";
 
 + (void)initialize
 {
-    _currentConfig = [[CodePushConfig alloc] init];
+    if (self == [CodePushConfig class]) {
+        _currentConfig = [[CodePushConfig alloc] init];
+    }
 }
 
 - (instancetype)init
@@ -47,7 +49,7 @@ static NSString * const ServerURLConfigKey = @"serverUrl";
 
     _configDictionary = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
                             appVersion,AppVersionConfigKey,
-                            buildVersion,BuildVdersionConfigKey,
+                            buildVersion,BuildVersionConfigKey,
                             serverURL,ServerURLConfigKey,
                             clientUniqueId,ClientUniqueIDConfigKey,
                             deploymentKey,DeploymentKeyConfigKey,
@@ -63,7 +65,7 @@ static NSString * const ServerURLConfigKey = @"serverUrl";
 
 - (NSString *)buildVersion
 {
-    return [_configDictionary objectForKey:BuildVdersionConfigKey];
+    return [_configDictionary objectForKey:BuildVersionConfigKey];
 }
 
 - (NSDictionary *)configuration
@@ -84,6 +86,11 @@ static NSString * const ServerURLConfigKey = @"serverUrl";
 - (NSString *)clientUniqueId
 {
     return [_configDictionary objectForKey:ClientUniqueIDConfigKey];
+}
+
+- (void)setAppVersion:(NSString *)appVersion
+{
+    [_configDictionary setValue:appVersion forKey:AppVersionConfigKey];
 }
 
 - (void)setDeploymentKey:(NSString *)deploymentKey

@@ -18,18 +18,21 @@ var path = require("path");
 var getFilesInFolder = require("./getFilesInFolder");
 
 var CODE_PUSH_FOLDER_PREFIX = "CodePush";
-var CODE_PUSH_HASH_FILE_NAME = "CodePushHash.json";
+var CODE_PUSH_HASH_FILE_NAME = "CodePushHash";
+var CODE_PUSH_HASH_OLD_FILE_NAME = "CodePushHash.json";
 var HASH_ALGORITHM = "sha256";
-var TEMP_FILE_PATH = path.join(require("os").tmpdir(), "CodePushResourcesMap.json");
 
 var resourcesDir = process.argv[2];
 var jsBundleFilePath = process.argv[3];
 var assetsDir = process.argv[4];
+var tempFileName = process.argv[5];
+
+var tempFileLocalPath = path.join(require("os").tmpdir(), tempFileName);
 var resourceFiles = [];
 
 getFilesInFolder(resourcesDir, resourceFiles);
 
-var oldFileToModifiedTimeMap = require(TEMP_FILE_PATH);
+var oldFileToModifiedTimeMap = require(tempFileLocalPath);
 var newFileToModifiedTimeMap = {};
 
 resourceFiles.forEach(function(resourceFile) {
@@ -51,20 +54,35 @@ if (bundleGeneratedAssetFiles.length) {
         // Generate hash for each asset file
         addFileToManifest(resourcesDir, assetFile, manifest, function() {
             if (manifest.length === bundleGeneratedAssetFiles.length) {
-                // Generate hash for JS bundle
-                addFileToManifest(path.dirname(jsBundleFilePath), path.basename(jsBundleFilePath), manifest, function() {
-                    // ...and the JS bundle "meta"
-                    var jsBundleMetaFilePath = jsBundleFilePath + ".meta";
-                    addFileToManifest(path.dirname(jsBundleMetaFilePath), path.basename(jsBundleMetaFilePath), manifest, function() {
-                        manifest = manifest.sort();
-                        var finalHash = crypto.createHash(HASH_ALGORITHM)
-                            .update(JSON.stringify(manifest))
-                            .digest("hex");
+                addJsBundleAndMetaToManifest();
+            }
+        });
+    });
+} else {
+    addJsBundleAndMetaToManifest();
+}
 
-                        var savedResourcesManifestPath = assetsDir + "/" + CODE_PUSH_HASH_FILE_NAME;
-                        fs.writeFileSync(savedResourcesManifestPath, finalHash);
-                    });
-                });
+function addJsBundleAndMetaToManifest() {
+    addFileToManifest(path.dirname(jsBundleFilePath), path.basename(jsBundleFilePath), manifest, function() {
+        var jsBundleMetaFilePath = jsBundleFilePath + ".meta";
+        addFileToManifest(path.dirname(jsBundleMetaFilePath), path.basename(jsBundleMetaFilePath), manifest, function() {
+            manifest = manifest.sort();
+            var finalHash = crypto.createHash(HASH_ALGORITHM)
+                .update(JSON.stringify(manifest))
+                .digest("hex");
+
+            console.log(finalHash);
+
+            var savedResourcesManifestPath = assetsDir + "/" + CODE_PUSH_HASH_FILE_NAME;
+            fs.writeFileSync(savedResourcesManifestPath, finalHash);
+
+            // "CodePushHash.json" file name breaks flow type checking.
+            // To fix the issue we need to delete "CodePushHash.json" file and
+            // use "CodePushHash" file name instead to store the hash value.
+            // Relates to https://github.com/Microsoft/react-native-code-push/issues/577
+            var oldSavedResourcesManifestPath = assetsDir + "/" + CODE_PUSH_HASH_OLD_FILE_NAME;
+            if (fs.existsSync(oldSavedResourcesManifestPath)) {
+                fs.unlinkSync(oldSavedResourcesManifestPath);
             }
         });
     });
@@ -98,4 +116,4 @@ function fileExists(file) {
     catch (e) { return false; }
 }
 
-fs.unlinkSync(TEMP_FILE_PATH);
+fs.unlinkSync(tempFileLocalPath);

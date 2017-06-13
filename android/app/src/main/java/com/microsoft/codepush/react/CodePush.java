@@ -1,53 +1,47 @@
 package com.microsoft.codepush.react;
 
+import android.content.Context;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+
+import com.facebook.react.ReactInstanceManager;
 import com.facebook.react.ReactPackage;
 import com.facebook.react.bridge.JavaScriptModule;
 import com.facebook.react.bridge.NativeModule;
 import com.facebook.react.bridge.ReactApplicationContext;
-import com.facebook.react.bridge.ReadableMap;
-import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.uimanager.ViewManager;
-import com.facebook.soloader.SoLoader;
-
-import android.content.Context;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageInfo;
-import android.content.pm.PackageManager;
 
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 
 public class CodePush implements ReactPackage {
 
     private static boolean sIsRunningBinaryVersion = false;
     private static boolean sNeedToReportRollback = false;
     private static boolean sTestConfigurationFlag = false;
+    private static String sAppVersion = null;
 
     private boolean mDidUpdate = false;
 
     private String mAssetsBundleFileName;
 
     // Helper classes.
-    private CodePushNativeModule mNativeModule;
     private CodePushUpdateManager mUpdateManager;
     private CodePushTelemetryManager mTelemetryManager;
     private SettingsManager mSettingsManager;
 
     // Config properties.
-    private String mAppVersion;
     private String mDeploymentKey;
     private String mServerUrl = "https://codepush.azurewebsites.net/";
 
     private Context mContext;
     private final boolean mIsDebugMode;
 
+    private static ReactInstanceHolder mReactInstanceHolder;
     private static CodePush mCurrentInstance;
 
     public CodePush(String deploymentKey, Context context) {
@@ -55,7 +49,6 @@ public class CodePush implements ReactPackage {
     }
 
     public CodePush(String deploymentKey, Context context, boolean isDebugMode) {
-        SoLoader.init(context, false);
         mContext = context.getApplicationContext();
 
         mUpdateManager = new CodePushUpdateManager(context.getFilesDir().getAbsolutePath());
@@ -64,11 +57,13 @@ public class CodePush implements ReactPackage {
         mIsDebugMode = isDebugMode;
         mSettingsManager = new SettingsManager(mContext);
 
-        try {
-            PackageInfo pInfo = mContext.getPackageManager().getPackageInfo(mContext.getPackageName(), 0);
-            mAppVersion = pInfo.versionName;
-        } catch (PackageManager.NameNotFoundException e) {
-            throw new CodePushUnknownException("Unable to get package info for " + mContext.getPackageName(), e);
+        if (sAppVersion == null) {
+            try {
+                PackageInfo pInfo = mContext.getPackageManager().getPackageInfo(mContext.getPackageName(), 0);
+                sAppVersion = pInfo.versionName;
+            } catch (PackageManager.NameNotFoundException e) {
+                throw new CodePushUnknownException("Unable to get package info for " + mContext.getPackageName(), e);
+            }
         }
 
         mCurrentInstance = this;
@@ -97,7 +92,7 @@ public class CodePush implements ReactPackage {
     }
 
     public String getAppVersion() {
-        return mAppVersion;
+        return sAppVersion;
     }
 
     public String getAssetsBundleFileName() {
@@ -105,22 +100,13 @@ public class CodePush implements ReactPackage {
     }
 
     long getBinaryResourcesModifiedTime() {
-        ZipFile applicationFile = null;
         try {
-            ApplicationInfo ai = this.mContext.getPackageManager().getApplicationInfo(this.mContext.getPackageName(), 0);
-            applicationFile = new ZipFile(ai.sourceDir);
-            ZipEntry classesDexEntry = applicationFile.getEntry(CodePushConstants.RESOURCES_BUNDLE);
-            return classesDexEntry.getTime();
-        } catch (PackageManager.NameNotFoundException | IOException e) {
-            throw new CodePushUnknownException("Error in getting file information about compiled resources", e);
-        } finally {
-            if (applicationFile != null) {
-                try {
-                    applicationFile.close();
-                } catch (IOException e) {
-                    throw new CodePushUnknownException("Error in closing application file.", e);
-                }
-            }
+            String packageName = this.mContext.getPackageName();
+            int codePushApkBuildTimeId = this.mContext.getResources().getIdentifier(CodePushConstants.CODE_PUSH_APK_BUILD_TIME_KEY, "string", packageName);
+            String codePushApkBuildTime = this.mContext.getResources().getString(codePushApkBuildTimeId);
+            return Long.parseLong(codePushApkBuildTime);
+        } catch (Exception e)  {
+            throw new CodePushUnknownException("Error in getting binary resources modified time", e);
         }
     }
 
@@ -143,7 +129,7 @@ public class CodePush implements ReactPackage {
     }
 
     public static String getJSBundleFile() {
-        return CodePush.getBundleUrl();
+        return CodePush.getJSBundleFile(CodePushConstants.DEFAULT_JS_BUNDLE_NAME);
     }
 
     public static String getJSBundleFile(String assetsBundleFileName) {
@@ -168,24 +154,24 @@ public class CodePush implements ReactPackage {
                 return binaryJsBundleUrl;
             }
 
-            ReadableMap packageMetadata = this.mUpdateManager.getCurrentPackage();
+            JSONObject packageMetadata = this.mUpdateManager.getCurrentPackage();
             Long binaryModifiedDateDuringPackageInstall = null;
-            String binaryModifiedDateDuringPackageInstallString = CodePushUtils.tryGetString(packageMetadata, CodePushConstants.BINARY_MODIFIED_TIME_KEY);
+            String binaryModifiedDateDuringPackageInstallString = packageMetadata.optString(CodePushConstants.BINARY_MODIFIED_TIME_KEY, null);
             if (binaryModifiedDateDuringPackageInstallString != null) {
                 binaryModifiedDateDuringPackageInstall = Long.parseLong(binaryModifiedDateDuringPackageInstallString);
             }
 
-            String packageAppVersion = CodePushUtils.tryGetString(packageMetadata, "appVersion");
+            String packageAppVersion = packageMetadata.optString("appVersion", null);
             if (binaryModifiedDateDuringPackageInstall != null &&
                     binaryModifiedDateDuringPackageInstall == binaryResourcesModifiedTime &&
-                    (isUsingTestConfiguration() || this.mAppVersion.equals(packageAppVersion))) {
+                    (isUsingTestConfiguration() || sAppVersion.equals(packageAppVersion))) {
                 CodePushUtils.logBundleUrl(packageFilePath);
                 sIsRunningBinaryVersion = false;
                 return packageFilePath;
             } else {
                 // The binary version is newer.
                 this.mDidUpdate = false;
-                if (!this.mIsDebugMode || !this.mAppVersion.equals(packageAppVersion)) {
+                if (!this.mIsDebugMode || !sAppVersion.equals(packageAppVersion)) {
                     this.clearUpdates();
                 }
 
@@ -250,8 +236,12 @@ public class CodePush implements ReactPackage {
         return sNeedToReportRollback;
     }
 
+    public static void overrideAppVersion(String appVersionOverride) {
+        sAppVersion = appVersionOverride;
+    }
+
     private void rollbackPackage() {
-        WritableMap failedPackage = mUpdateManager.getCurrentPackage();
+        JSONObject failedPackage = mUpdateManager.getCurrentPackage();
         mSettingsManager.saveFailedUpdate(failedPackage);
         mUpdateManager.rollbackPackage();
         mSettingsManager.removePendingUpdate();
@@ -276,15 +266,25 @@ public class CodePush implements ReactPackage {
         mSettingsManager.removeFailedUpdates();
     }
 
+    public static void setReactInstanceHolder(ReactInstanceHolder reactInstanceHolder) {
+        mReactInstanceHolder = reactInstanceHolder;
+    }
+
+    static ReactInstanceManager getReactInstanceManager() {
+        if (mReactInstanceHolder == null) {
+            return null;
+        }
+        return mReactInstanceHolder.getReactInstanceManager();
+    }
+    
     @Override
     public List<NativeModule> createNativeModules(ReactApplicationContext reactApplicationContext) {
-        List<NativeModule> nativeModules = new ArrayList<>();
-        mNativeModule = new CodePushNativeModule(reactApplicationContext, this, mUpdateManager, mTelemetryManager, mSettingsManager);
+        CodePushNativeModule codePushModule = new CodePushNativeModule(reactApplicationContext, this, mUpdateManager, mTelemetryManager, mSettingsManager);
         CodePushDialog dialogModule = new CodePushDialog(reactApplicationContext);
 
-        nativeModules.add(mNativeModule);
+        List<NativeModule> nativeModules = new ArrayList<>();
+        nativeModules.add(codePushModule);
         nativeModules.add(dialogModule);
-
         return nativeModules;
     }
 

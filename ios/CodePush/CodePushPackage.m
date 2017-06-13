@@ -29,7 +29,7 @@ static NSString *const UnzippedFolderName = @"unzipped";
                                                              error:&error];
     
     if (error) {
-        NSLog(@"Error downloading from URL %@", remoteBundleUrl);
+        CPLog(@"Error downloading from URL %@", remoteBundleUrl);
     } else {
         NSString *currentPackageBundlePath = [self getCurrentPackageBundlePath:&error];
         [downloadedBundle writeToFile:currentPackageBundlePath
@@ -101,7 +101,7 @@ static NSString *const UnzippedFolderName = @"unzipped";
                                                         [[NSFileManager defaultManager] removeItemAtPath:downloadFilePath
                                                                                                    error:&nonFailingError];
                                                         if (nonFailingError) {
-                                                            NSLog(@"Error deleting downloaded file: %@", nonFailingError);
+                                                            CPLog(@"Error deleting downloaded file: %@", nonFailingError);
                                                             nonFailingError = nil;
                                                         }
                                                         
@@ -128,7 +128,7 @@ static NSString *const UnzippedFolderName = @"unzipped";
                                                                     return;
                                                                 }
                                                                 
-                                                                [[NSFileManager defaultManager] copyItemAtPath:[self getBinaryAssetsPath]
+                                                                [[NSFileManager defaultManager] copyItemAtPath:[CodePush bundleAssetsPath]
                                                                                                         toPath:[newUpdateCodePushPath stringByAppendingPathComponent:[CodePushUpdateUtils assetsFolderName]]
                                                                                                          error:&error];
                                                                 if (error) {
@@ -198,7 +198,7 @@ static NSString *const UnzippedFolderName = @"unzipped";
                                                         [[NSFileManager defaultManager] removeItemAtPath:unzippedFolderPath
                                                                                                    error:&nonFailingError];
                                                         if (nonFailingError) {
-                                                            NSLog(@"Error deleting downloaded file: %@", nonFailingError);
+                                                            CPLog(@"Error deleting downloaded file: %@", nonFailingError);
                                                             nonFailingError = nil;
                                                         }
                                                         
@@ -280,11 +280,6 @@ static NSString *const UnzippedFolderName = @"unzipped";
     [downloadHandler download:updatePackage[@"downloadUrl"]];
 }
 
-+ (NSString *)getBinaryAssetsPath
-{
-    return [[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:[CodePushUpdateUtils assetsFolderName]];
-}
-
 + (NSString *)getCodePushPath
 {
     NSString* codePushPath = [[CodePush getApplicationSupportDirectory] stringByAppendingPathComponent:@"CodePush"];
@@ -298,10 +293,10 @@ static NSString *const UnzippedFolderName = @"unzipped";
 + (NSDictionary *)getCurrentPackage:(NSError **)error
 {
     NSString *packageHash = [CodePushPackage getCurrentPackageHash:error];
-    if (*error || !packageHash) {
+    if (!packageHash) {
         return nil;
     }
-    
+
     return [CodePushPackage getPackage:packageHash error:error];
 }
 
@@ -309,14 +304,14 @@ static NSString *const UnzippedFolderName = @"unzipped";
 {
     NSString *packageFolder = [self getCurrentPackageFolderPath:error];
     
-    if(*error) {
-        return NULL;
+    if (!packageFolder) {
+        return nil;
     }
     
     NSDictionary *currentPackage = [self getCurrentPackage:error];
     
-    if(*error) {
-        return NULL;
+    if (!currentPackage) {
+        return nil;
     }
     
     NSString *relativeBundlePath = [currentPackage objectForKey:RelativeBundlePathKey];
@@ -330,7 +325,7 @@ static NSString *const UnzippedFolderName = @"unzipped";
 + (NSString *)getCurrentPackageHash:(NSError **)error
 {
     NSDictionary *info = [self getCurrentPackageInfo:error];
-    if (*error || !info) {
+    if (!info) {
         return nil;
     }
     
@@ -341,14 +336,14 @@ static NSString *const UnzippedFolderName = @"unzipped";
 {
     NSDictionary *info = [self getCurrentPackageInfo:error];
     
-    if (*error) {
-        return NULL;
+    if (!info) {
+        return nil;
     }
     
     NSString *packageHash = info[@"currentPackage"];
     
     if (!packageHash) {
-        return NULL;
+        return nil;
     }
     
     return [self getPackageFolderPath:packageHash];
@@ -364,7 +359,7 @@ static NSString *const UnzippedFolderName = @"unzipped";
     NSString *content = [NSString stringWithContentsOfFile:statusFilePath
                                                   encoding:NSUTF8StringEncoding
                                                      error:error];
-    if (*error) {
+    if (!content) {
         return nil;
     }
     
@@ -372,7 +367,7 @@ static NSString *const UnzippedFolderName = @"unzipped";
     NSDictionary* json = [NSJSONSerialization JSONObjectWithData:data
                                                          options:kNilOptions
                                                            error:error];
-    if (*error) {
+    if (!json) {
         return nil;
     }
     
@@ -397,8 +392,7 @@ static NSString *const UnzippedFolderName = @"unzipped";
     NSString *updateMetadataString = [NSString stringWithContentsOfFile:updateMetadataFilePath
                                                                encoding:NSUTF8StringEncoding
                                                                   error:error];
-    
-    if (*error) {
+    if (!updateMetadataString) {
         return nil;
     }
     
@@ -416,7 +410,7 @@ static NSString *const UnzippedFolderName = @"unzipped";
 + (NSDictionary *)getPreviousPackage:(NSError **)error
 {
     NSString *packageHash = [self getPreviousPackageHash:error];
-    if (*error || !packageHash) {
+    if (!packageHash) {
         return nil;
     }
     
@@ -426,7 +420,7 @@ static NSString *const UnzippedFolderName = @"unzipped";
 + (NSString *)getPreviousPackageHash:(NSError **)error
 {
     NSDictionary *info = [self getCurrentPackageInfo:error];
-    if (*error) {
+    if (!info) {
         return nil;
     }
     
@@ -443,67 +437,73 @@ static NSString *const UnzippedFolderName = @"unzipped";
     return [[self getCodePushPath] stringByAppendingPathComponent:UnzippedFolderName];
 }
 
-+ (void)installPackage:(NSDictionary *)updatePackage
++ (BOOL)installPackage:(NSDictionary *)updatePackage
    removePendingUpdate:(BOOL)removePendingUpdate
                  error:(NSError **)error
 {
     NSString *packageHash = updatePackage[@"packageHash"];
     NSMutableDictionary *info = [self getCurrentPackageInfo:error];
     
-    if (*error) {
-        return;
+    if (!info) {
+        return NO;
     }
     
+    if (packageHash && [packageHash isEqualToString:info[@"currentPackage"]]) {
+        // The current package is already the one being installed, so we should no-op.
+        return YES;
+    }
+
     if (removePendingUpdate) {
         NSString *currentPackageFolderPath = [self getCurrentPackageFolderPath:error];
-        if (!*error && currentPackageFolderPath) {
+        if (currentPackageFolderPath) {
             // Error in deleting pending package will not cause the entire operation to fail.
             NSError *deleteError;
             [[NSFileManager defaultManager] removeItemAtPath:currentPackageFolderPath
                                                        error:&deleteError];
             if (deleteError) {
-                NSLog(@"Error deleting pending package: %@", deleteError);
+                CPLog(@"Error deleting pending package: %@", deleteError);
             }
         }
     } else {
         NSString *previousPackageHash = [self getPreviousPackageHash:error];
-        if (!*error && previousPackageHash && ![previousPackageHash isEqualToString:packageHash]) {
+        if (previousPackageHash && ![previousPackageHash isEqualToString:packageHash]) {
             NSString *previousPackageFolderPath = [self getPackageFolderPath:previousPackageHash];
             // Error in deleting old package will not cause the entire operation to fail.
             NSError *deleteError;
             [[NSFileManager defaultManager] removeItemAtPath:previousPackageFolderPath
                                                        error:&deleteError];
             if (deleteError) {
-                NSLog(@"Error deleting old package: %@", deleteError);
+                CPLog(@"Error deleting old package: %@", deleteError);
             }
         }
         [info setValue:info[@"currentPackage"] forKey:@"previousPackage"];
     }
     
     [info setValue:packageHash forKey:@"currentPackage"];
-    
-    [self updateCurrentPackageInfo:info
-                             error:error];
+    return [self updateCurrentPackageInfo:info
+                                    error:error];
 }
 
 + (void)rollbackPackage
 {
     NSError *error;
     NSMutableDictionary *info = [self getCurrentPackageInfo:&error];
-    if (error) {
+    if (!info) {
+        CPLog(@"Error getting current package info: %@", error);
         return;
     }
     
-    NSString *currentPackageFolderPath = [self getCurrentPackageFolderPath:&error];
-    if (error) {
+    NSString *currentPackageFolderPath = [self getCurrentPackageFolderPath:&error];        
+    if (!currentPackageFolderPath) {
+        CPLog(@"Error getting current package folder path: %@", error);
         return;
     }
     
     NSError *deleteError;
-    [[NSFileManager defaultManager] removeItemAtPath:currentPackageFolderPath
+    BOOL result = [[NSFileManager defaultManager] removeItemAtPath:currentPackageFolderPath
                                                error:&deleteError];
-    if (deleteError) {
-        NSLog(@"Error deleting current package contents at %@", currentPackageFolderPath);
+    if (!result) {
+        CPLog(@"Error deleting current package contents at %@ error %@", currentPackageFolderPath, deleteError);
     }
     
     [info setValue:info[@"previousPackage"] forKey:@"currentPackage"];
@@ -512,20 +512,27 @@ static NSString *const UnzippedFolderName = @"unzipped";
     [self updateCurrentPackageInfo:info error:&error];
 }
 
-+ (void)updateCurrentPackageInfo:(NSDictionary *)packageInfo
++ (BOOL)updateCurrentPackageInfo:(NSDictionary *)packageInfo
                            error:(NSError **)error
 {
-    
     NSData *packageInfoData = [NSJSONSerialization dataWithJSONObject:packageInfo
                                                               options:0
                                                                 error:error];
-    
+    if (!packageInfoData) {
+        return NO;
+    }
+
     NSString *packageInfoString = [[NSString alloc] initWithData:packageInfoData
                                                         encoding:NSUTF8StringEncoding];
-    [packageInfoString writeToFile:[self getStatusFilePath]
+    BOOL result = [packageInfoString writeToFile:[self getStatusFilePath]
                         atomically:YES
                           encoding:NSUTF8StringEncoding
                              error:error];
+
+    if (!result) {
+        return NO;
+    }
+    return YES;
 }
 
 @end

@@ -20,7 +20,8 @@ failCallback:(void (^)(NSError *err))failCallback {
     return self;
 }
 
-- (void)download:(NSString*)url {
+- (void)download:(NSString *)url {
+    self.downloadUrl = url;
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:url]
                                              cachePolicy:NSURLRequestUseProtocolCachePolicy
                                          timeoutInterval:60.0];
@@ -48,6 +49,17 @@ failCallback:(void (^)(NSError *err))failCallback {
 }
 
 - (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
+    if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
+        NSInteger statusCode = [(NSHTTPURLResponse *)response statusCode];
+        if (statusCode >= 400) {
+            [self.outputFileStream close];
+            [connection cancel];
+            NSError *err = [CodePushErrorUtils errorWithMessage:[NSString stringWithFormat: @"Received %ld response from %@", (long)statusCode, self.downloadUrl]];
+            self.failCallback(err);
+            return;
+        }
+    }
+    
     self.expectedContentLength = response.expectedContentLength;
     [self.outputFileStream open];
 }
@@ -98,13 +110,19 @@ failCallback:(void (^)(NSError *err))failCallback {
 }
 
 - (void)connectionDidFinishLoading:(NSURLConnection *)connection {
+    [self.outputFileStream close];
+    if (self.receivedContentLength < 1) {
+        NSError *err = [CodePushErrorUtils errorWithMessage:[NSString stringWithFormat:@"Received empty response from %@", self.downloadUrl]];
+        self.failCallback(err);
+        return;
+    }
+    
     // expectedContentLength might be -1 when NSURLConnection don't know the length(e.g. response encode with gzip)
     if (self.expectedContentLength > 0) {
         // We should have received all of the bytes if this is called.
         assert(self.receivedContentLength == self.expectedContentLength);
     }
 
-    [self.outputFileStream close];
     BOOL isZip = _header[0] == 'P' && _header[1] == 'K' && _header[2] == 3 && _header[3] == 4;
     self.doneCallback(isZip);
 }

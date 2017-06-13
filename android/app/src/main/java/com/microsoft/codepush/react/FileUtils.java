@@ -54,25 +54,15 @@ public class FileUtils {
         }
     }
 
-    public static void deleteDirectory(File directory) {
-        if (directory.exists()) {
-            File[] files = directory.listFiles();
-            if (files != null) {
-                for (File file : files) {
-                    if(file.isDirectory()) {
-                        deleteDirectory(file);
-                    }
-                    else {
-                        file.delete();
-                    }
-                }
-            }
-        }
-        directory.delete();
-    }
-
     public static void deleteDirectoryAtPath(String directoryPath) {
-        deleteDirectory(new File(directoryPath));
+        if (directoryPath == null) {
+            CodePushUtils.log("deleteDirectoryAtPath attempted with null directoryPath");
+            return;
+        }
+        File file = new File(directoryPath);
+        if (file.exists()) {
+            deleteFileOrFolderSilently(file);
+        }
     }
 
     public static void deleteFileAtPathSilently(String path) {
@@ -86,9 +76,7 @@ public class FileUtils {
                 if (fileEntry.isDirectory()) {
                     deleteFileOrFolderSilently(fileEntry);
                 } else {
-                    if (!file.delete()) {
-                        fileEntry.delete();
-                    }
+                    fileEntry.delete();
                 }
             }
         }
@@ -147,7 +135,7 @@ public class FileUtils {
 
             File destinationFolder = new File(destination);
             if (destinationFolder.exists()) {
-                deleteDirectory(destinationFolder);
+                deleteFileOrFolderSilently(destinationFolder);
             }
             
             destinationFolder.mkdirs();

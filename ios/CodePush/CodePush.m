@@ -1,9 +1,18 @@
+#if __has_include(<React/RCTAssert.h>)
+#import <React/RCTAssert.h>
+#import <React/RCTBridgeModule.h>
+#import <React/RCTConvert.h>
+#import <React/RCTEventDispatcher.h>
+#import <React/RCTRootView.h>
+#import <React/RCTUtils.h>
+#else // back compatibility for RN version < 0.40
 #import "RCTAssert.h"
 #import "RCTBridgeModule.h"
 #import "RCTConvert.h"
 #import "RCTEventDispatcher.h"
 #import "RCTRootView.h"
 #import "RCTUtils.h"
+#endif
 
 #import "CodePush.h"
 
@@ -15,6 +24,8 @@
     BOOL _isFirstRunAfterUpdate;
     int _minimumBackgroundDuration;
     NSDate *_lastResignedDate;
+    CodePushInstallMode *_installMode;
+    NSTimer *_appSuspendTimer;
 
     // Used to coordinate the dispatching of download progress events to JS.
     long long _latestExpectedContentLength;
@@ -25,6 +36,9 @@
 RCT_EXPORT_MODULE()
 
 #pragma mark - Private constants
+
+// These constants represent emitted events
+static NSString *const DownloadProgressEvent = @"CodePushDownloadProgress";
 
 // These constants represent valid deployment statuses
 static NSString *const DeploymentFailed = @"DeploymentFailed";
@@ -52,35 +66,85 @@ static BOOL isRunningBinaryVersion = NO;
 static BOOL needToReportRollback = NO;
 static BOOL testConfigurationFlag = NO;
 
-// These values are used to save the bundleURL and extension for the JS bundle
-// in the binary.
+// These values are used to save the NS bundle, name, extension and subdirectory
+// for the JS bundle in the binary.
+static NSBundle *bundleResourceBundle = nil;
 static NSString *bundleResourceExtension = @"jsbundle";
 static NSString *bundleResourceName = @"main";
+static NSString *bundleResourceSubdirectory = nil;
+
++ (void)initialize
+{
+    [super initialize];
+    if (self == [CodePush class]) {
+        // Use the mainBundle by default.
+        bundleResourceBundle = [NSBundle mainBundle];
+    }
+}
 
 #pragma mark - Public Obj-C API
 
 + (NSURL *)binaryBundleURL
 {
-    return [[NSBundle mainBundle] URLForResource:bundleResourceName withExtension:bundleResourceExtension];
+    return [bundleResourceBundle URLForResource:bundleResourceName
+                                  withExtension:bundleResourceExtension
+                                   subdirectory:bundleResourceSubdirectory];
+}
+
++ (NSString *)bundleAssetsPath
+{
+    NSString *resourcePath = [bundleResourceBundle resourcePath];
+    if (bundleResourceSubdirectory) {
+        resourcePath = [resourcePath stringByAppendingPathComponent:bundleResourceSubdirectory];
+    }
+
+    return [resourcePath stringByAppendingPathComponent:[CodePushUpdateUtils assetsFolderName]];
 }
 
 + (NSURL *)bundleURL
 {
-    return [self bundleURLForResource:bundleResourceName];
+    return [self bundleURLForResource:bundleResourceName
+                        withExtension:bundleResourceExtension
+                         subdirectory:bundleResourceSubdirectory
+                               bundle:bundleResourceBundle];
 }
 
 + (NSURL *)bundleURLForResource:(NSString *)resourceName
 {
-    bundleResourceName = resourceName;
     return [self bundleURLForResource:resourceName
-                        withExtension:bundleResourceExtension];
+                        withExtension:bundleResourceExtension
+                         subdirectory:bundleResourceSubdirectory
+                               bundle:bundleResourceBundle];
 }
 
 + (NSURL *)bundleURLForResource:(NSString *)resourceName
                   withExtension:(NSString *)resourceExtension
 {
+    return [self bundleURLForResource:resourceName
+                        withExtension:resourceExtension
+                         subdirectory:bundleResourceSubdirectory
+                               bundle:bundleResourceBundle];
+}
+
++ (NSURL *)bundleURLForResource:(NSString *)resourceName
+                  withExtension:(NSString *)resourceExtension
+                   subdirectory:(NSString *)resourceSubdirectory
+{
+    return [self bundleURLForResource:resourceName
+                        withExtension:resourceExtension
+                         subdirectory:resourceSubdirectory
+                               bundle:bundleResourceBundle];
+}
+
++ (NSURL *)bundleURLForResource:(NSString *)resourceName
+                  withExtension:(NSString *)resourceExtension
+                   subdirectory:(NSString *)resourceSubdirectory
+                         bundle:(NSBundle *)resourceBundle
+{
     bundleResourceName = resourceName;
     bundleResourceExtension = resourceExtension;
+    bundleResourceSubdirectory = resourceSubdirectory;
+    bundleResourceBundle = resourceBundle;
 
     [self ensureBinaryBundleExists];
 
@@ -91,7 +155,7 @@ static NSString *bundleResourceName = @"main";
     NSURL *binaryBundleURL = [self binaryBundleURL];
 
     if (error || !packageFile) {
-        NSLog(logMessageFormat, binaryBundleURL);
+        CPLog(logMessageFormat, binaryBundleURL);
         isRunningBinaryVersion = YES;
         return binaryBundleURL;
     }
@@ -99,7 +163,7 @@ static NSString *bundleResourceName = @"main";
     NSString *binaryAppVersion = [[CodePushConfig current] appVersion];
     NSDictionary *currentPackageMetadata = [CodePushPackage getCurrentPackage:&error];
     if (error || !currentPackageMetadata) {
-        NSLog(logMessageFormat, binaryBundleURL);
+        CPLog(logMessageFormat, binaryBundleURL);
         isRunningBinaryVersion = YES;
         return binaryBundleURL;
     }
@@ -110,7 +174,7 @@ static NSString *bundleResourceName = @"main";
     if ([[CodePushUpdateUtils modifiedDateStringOfFileAtURL:binaryBundleURL] isEqualToString:packageDate] && ([CodePush isUsingTestConfiguration] ||[binaryAppVersion isEqualToString:packageAppVersion])) {
         // Return package file because it is newer than the app store binary's JS bundle
         NSURL *packageUrl = [[NSURL alloc] initFileURLWithPath:packageFile];
-        NSLog(logMessageFormat, packageUrl);
+        CPLog(logMessageFormat, packageUrl);
         isRunningBinaryVersion = NO;
         return packageUrl;
     } else {
@@ -123,7 +187,7 @@ static NSString *bundleResourceName = @"main";
             [CodePush clearUpdates];
         }
 
-        NSLog(logMessageFormat, binaryBundleURL);
+        CPLog(logMessageFormat, binaryBundleURL);
         isRunningBinaryVersion = YES;
         return binaryBundleURL;
     }
@@ -133,6 +197,11 @@ static NSString *bundleResourceName = @"main";
 {
     NSString *applicationSupportDirectory = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) objectAtIndex:0];
     return applicationSupportDirectory;
+}
+
++ (void)overrideAppVersion:(NSString *)appVersion
+{
+    [CodePushConfig current].appVersion = appVersion;
 }
 
 + (void)setDeploymentKey:(NSString *)deploymentKey
@@ -174,7 +243,6 @@ static NSString *bundleResourceName = @"main";
 
 #pragma mark - Private API methods
 
-@synthesize bridge = _bridge;
 @synthesize methodQueue = _methodQueue;
 @synthesize pauseCallback = _pauseCallback;
 @synthesize paused = _paused;
@@ -198,7 +266,7 @@ static NSString *bundleResourceName = @"main";
 - (void)clearDebugUpdates
 {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if ([_bridge.bundleURL.scheme hasPrefix:@"http"]) {
+        if ([super.bridge.bundleURL.scheme hasPrefix:@"http"]) {
             NSError *error;
             NSString *binaryAppVersion = [[CodePushConfig current] appVersion];
             NSDictionary *currentPackageMetadata = [CodePushPackage getCurrentPackage:&error];
@@ -226,6 +294,7 @@ static NSString *bundleResourceName = @"main";
              @"codePushInstallModeOnNextRestart":@(CodePushInstallModeOnNextRestart),
              @"codePushInstallModeImmediate": @(CodePushInstallModeImmediate),
              @"codePushInstallModeOnNextResume": @(CodePushInstallModeOnNextResume),
+             @"codePushInstallModeOnNextSuspend": @(CodePushInstallModeOnNextSuspend),
 
              @"codePushUpdateStateRunning": @(CodePushUpdateStateRunning),
              @"codePushUpdateStatePending": @(CodePushUpdateStatePending),
@@ -240,15 +309,15 @@ static NSString *bundleResourceName = @"main";
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-- (void)dispatchDownloadProgressEvent
-{
-    // Notify the script-side about the progress
-    [self.bridge.eventDispatcher
-     sendDeviceEventWithName:@"CodePushDownloadProgress"
-     body:@{
-            @"totalBytes":[NSNumber numberWithLongLong:_latestExpectedContentLength],
-            @"receivedBytes":[NSNumber numberWithLongLong:_latestReceivedConentLength]
-            }];
+- (void)dispatchDownloadProgressEvent {
+  // Notify the script-side about the progress
+  [self sendEventWithName:DownloadProgressEvent
+                     body:@{
+                       @"totalBytes" : [NSNumber
+                           numberWithLongLong:_latestExpectedContentLength],
+                       @"receivedBytes" : [NSNumber
+                           numberWithLongLong:_latestReceivedConentLength]
+                     }];
 }
 
 /*
@@ -260,21 +329,25 @@ static NSString *bundleResourceName = @"main";
     if (![self binaryBundleURL]) {
         NSString *errorMessage;
 
-#if TARGET_IPHONE_SIMULATOR
-        errorMessage = @"React Native doesn't generate your app's JS bundle by default when deploying to the simulator. "
-        "If you'd like to test CodePush using the simulator, you can do one of three things depending on your React "
-        "Native version and/or preferred workflow:\n\n"
+    #ifdef DEBUG
+        #if TARGET_IPHONE_SIMULATOR
+            errorMessage = @"React Native doesn't generate your app's JS bundle by default when deploying to the simulator. "
+            "If you'd like to test CodePush using the simulator, you can do one of three things depending on your React "
+            "Native version and/or preferred workflow:\n\n"
 
-        "1. Update your AppDelegate.m file to load the JS bundle from the packager instead of from CodePush. "
-        "You can still test your CodePush update experience using this workflow (debug builds only).\n\n"
+            "1. Update your AppDelegate.m file to load the JS bundle from the packager instead of from CodePush. "
+            "You can still test your CodePush update experience using this workflow (debug builds only).\n\n"
 
-        "2. Force the JS bundle to be generated in simulator builds by removing the if block that echoes "
-        "\"Skipping bundling for Simulator platform\" in the \"node_modules/react-native/packager/react-native-xcode.sh\" file.\n\n"
+            "2. Force the JS bundle to be generated in simulator builds by removing the if block that echoes "
+            "\"Skipping bundling for Simulator platform\" in the \"node_modules/react-native/packager/react-native-xcode.sh\" file.\n\n"
 
-        "3. Deploy a release build to the simulator, which unlike debug builds, will generate the JS bundle (React Native >=0.22.0 only).";
-#else
-        errorMessage = [NSString stringWithFormat:@"The specified JS bundle file wasn't found within the app's binary. Is \"%@\" the correct file name?", [bundleResourceName stringByAppendingPathExtension:bundleResourceExtension]];
-#endif
+            "3. Deploy a release build to the simulator, which unlike debug builds, will generate the JS bundle (React Native >=0.22.0 only).";
+        #else
+            errorMessage = [NSString stringWithFormat:@"The specified JS bundle file wasn't found within the app's binary. Is \"%@\" the correct file name?", [bundleResourceName stringByAppendingPathExtension:bundleResourceExtension]];
+        #endif
+    #else
+        errorMessage = @"Something went wrong. Please verify if generated JS bundle is correct. ";
+    #endif
 
         RCTFatal([CodePushErrorUtils errorWithMessage:errorMessage]);
     }
@@ -310,7 +383,7 @@ static NSString *bundleResourceName = @"main";
         if (updateIsLoading) {
             // Pending update was initialized, but notifyApplicationReady was not called.
             // Therefore, deduce that it is a broken update and rollback.
-            NSLog(@"Update did not finish loading the last time, rolling back to a previous version.");
+            CPLog(@"Update did not finish loading the last time, rolling back to a previous version.");
             needToReportRollback = YES;
             [self rollbackPackage];
         } else {
@@ -326,7 +399,7 @@ static NSString *bundleResourceName = @"main";
  * This method checks to see whether a specific package hash
  * has previously failed installation.
  */
-- (BOOL)isFailedHash:(NSString*)packageHash
++ (BOOL)isFailedHash:(NSString*)packageHash
 {
     NSUserDefaults *preferences = [NSUserDefaults standardUserDefaults];
     NSMutableArray *failedUpdates = [preferences objectForKey:FailedUpdatesKey];
@@ -356,7 +429,7 @@ static NSString *bundleResourceName = @"main";
  * represents a downloaded and installed update, that hasn't
  * been applied yet via an app restart.
  */
-- (BOOL)isPendingUpdate:(NSString*)packageHash
++ (BOOL)isPendingUpdate:(NSString*)packageHash
 {
     NSUserDefaults *preferences = [NSUserDefaults standardUserDefaults];
     NSDictionary *pendingUpdate = [preferences objectForKey:PendingUpdateKey];
@@ -377,18 +450,18 @@ static NSString *bundleResourceName = @"main";
  */
 - (void)loadBundle
 {
-    // This needs to be async dispatched because the _bridge is not set on init
+    // This needs to be async dispatched because the bridge is not set on init
     // when the app first starts, therefore rollbacks will not take effect.
     dispatch_async(dispatch_get_main_queue(), ^{
         // If the current bundle URL is using http(s), then assume the dev
         // is debugging and therefore, shouldn't be redirected to a local
         // file (since Chrome wouldn't support it). Otherwise, update
         // the current bundle URL to point at the latest update
-        if ([CodePush isUsingTestConfiguration] || ![_bridge.bundleURL.scheme hasPrefix:@"http"]) {
-            [_bridge setValue:[CodePush bundleURL] forKey:@"bundleURL"];
+        if ([CodePush isUsingTestConfiguration] || ![super.bridge.bundleURL.scheme hasPrefix:@"http"]) {
+            [super.bridge setValue:[CodePush bundleURL] forKey:@"bundleURL"];
         }
 
-        [_bridge reload];
+        [super.bridge reload];
     });
 }
 
@@ -403,9 +476,16 @@ static NSString *bundleResourceName = @"main";
 {
     NSError *error;
     NSDictionary *failedPackage = [CodePushPackage getCurrentPackage:&error];
-
-    // Write the current package's metadata to the "failed list"
-    [self saveFailedUpdate:failedPackage];
+    if (!failedPackage) {
+        if (error) {
+            CPLog(@"Error getting current update metadata during rollback: %@", error);
+        } else {
+            CPLog(@"Attempted to perform a rollback when there is no current update");
+        }
+    } else {
+        // Write the current package's metadata to the "failed list"
+        [self saveFailedUpdate:failedPackage];
+    }
 
     // Rollback to the previous version and de-register the new update
     [CodePushPackage rollbackPackage];
@@ -476,12 +556,20 @@ static NSString *bundleResourceName = @"main";
     [preferences synchronize];
 }
 
+- (NSArray<NSString *> *)supportedEvents {
+    return @[DownloadProgressEvent];
+}
+
 #pragma mark - Application lifecycle event handlers
 
 // These two handlers will only be registered when there is
 // a resume-based update still pending installation.
 - (void)applicationWillEnterForeground
 {
+    if (_appSuspendTimer) {
+        [_appSuspendTimer invalidate];
+        _appSuspendTimer = nil;
+    }
     // Determine how long the app was in the background and ensure
     // that it meets the minimum duration amount of time.
     int durationInBackground = 0;
@@ -499,6 +587,18 @@ static NSString *bundleResourceName = @"main";
     // Save the current time so that when the app is later
     // resumed, we can detect how long it was in the background.
     _lastResignedDate = [NSDate date];
+
+    if (_installMode == CodePushInstallModeOnNextSuspend && [[self class] isPendingUpdate:nil]) {
+        _appSuspendTimer = [NSTimer scheduledTimerWithTimeInterval:_minimumBackgroundDuration
+                                                         target:self
+                                                       selector:@selector(loadBundleOnTick:)
+                                                       userInfo:nil
+                                                        repeats:NO];
+    }
+}
+
+-(void)loadBundleOnTick:(NSTimer *)timer {
+    [self loadBundle];
 }
 
 #pragma mark - JavaScript-exported module methods (Public)
@@ -582,7 +682,7 @@ RCT_EXPORT_METHOD(getConfiguration:(RCTPromiseResolveBlock)resolve
         // isRunningBinaryVersion will not get set to "YES" if running against the packager.
         NSString *binaryHash = [CodePushUpdateUtils getHashForBinaryContents:[CodePush binaryBundleURL] error:&error];
         if (error) {
-            NSLog(@"Error obtaining hash for binary contents: %@", error);
+            CPLog(@"Error obtaining hash for binary contents: %@", error);
             resolve(configuration);
             return;
         }
@@ -624,7 +724,7 @@ RCT_EXPORT_METHOD(getUpdateMetadata:(CodePushUpdateState)updateState
     }
 
     // We have a CodePush update, so let's see if it's currently in a pending state.
-    BOOL currentUpdateIsPending = [self isPendingUpdate:[package objectForKey:PackageHashKey]];
+    BOOL currentUpdateIsPending = [[self class] isPendingUpdate:[package objectForKey:PackageHashKey]];
 
     if (updateState == CodePushUpdateStatePending && !currentUpdateIsPending) {
         // The caller wanted a pending update
@@ -663,7 +763,7 @@ RCT_EXPORT_METHOD(installUpdate:(NSDictionary*)updatePackage
 {
     NSError *error;
     [CodePushPackage installPackage:updatePackage
-                removePendingUpdate:[self isPendingUpdate:nil]
+                removePendingUpdate:[[self class] isPendingUpdate:nil]
                               error:&error];
 
     if (error) {
@@ -672,7 +772,8 @@ RCT_EXPORT_METHOD(installUpdate:(NSDictionary*)updatePackage
         [self savePendingUpdate:updatePackage[PackageHashKey]
                       isLoading:NO];
 
-        if (installMode == CodePushInstallModeOnNextResume) {
+        _installMode = installMode;
+        if (_installMode == CodePushInstallModeOnNextResume || _installMode == CodePushInstallModeOnNextSuspend) {
             _minimumBackgroundDuration = minimumBackgroundDuration;
 
             if (!_hasResumeListener) {
@@ -682,12 +783,12 @@ RCT_EXPORT_METHOD(installUpdate:(NSDictionary*)updatePackage
                 [[NSNotificationCenter defaultCenter] addObserver:self
                                                          selector:@selector(applicationWillEnterForeground)
                                                              name:UIApplicationWillEnterForegroundNotification
-                                                           object:[UIApplication sharedApplication]];
+                                                           object:RCTSharedApplication()];
 
                 [[NSNotificationCenter defaultCenter] addObserver:self
                                                          selector:@selector(applicationWillResignActive)
                                                              name:UIApplicationWillResignActiveNotification
-                                                           object:[UIApplication sharedApplication]];
+                                                           object:RCTSharedApplication()];
 
                 _hasResumeListener = YES;
             }
@@ -706,7 +807,7 @@ RCT_EXPORT_METHOD(isFailedUpdate:(NSString *)packageHash
                          resolve:(RCTPromiseResolveBlock)resolve
                           reject:(RCTPromiseRejectBlock)reject)
 {
-    BOOL isFailedHash = [self isFailedHash:packageHash];
+    BOOL isFailedHash = [[self class] isFailedHash:packageHash];
     resolve(@(isFailedHash));
 }
 
@@ -740,13 +841,19 @@ RCT_EXPORT_METHOD(notifyApplicationReady:(RCTPromiseResolveBlock)resolve
 /*
  * This method is the native side of the CodePush.restartApp() method.
  */
-RCT_EXPORT_METHOD(restartApp:(BOOL)onlyIfUpdateIsPending)
+RCT_EXPORT_METHOD(restartApp:(BOOL)onlyIfUpdateIsPending
+                     resolve:(RCTPromiseResolveBlock)resolve
+                    rejecter:(RCTPromiseRejectBlock)reject)
 {
     // If this is an unconditional restart request, or there
     // is current pending update, then reload the app.
-    if (!onlyIfUpdateIsPending || [self isPendingUpdate:nil]) {
+    if (!onlyIfUpdateIsPending || [[self class] isPendingUpdate:nil]) {
         [self loadBundle];
+        resolve(@(YES));
+        return;
     }
+
+    resolve(@(NO));
 }
 
 #pragma mark - JavaScript-exported module methods (Private)
